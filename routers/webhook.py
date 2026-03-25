@@ -21,38 +21,29 @@ async def receive_wecom_message(
   raw_body = await request.body()
   raw_str = raw_body.decode("utf-8")
 
-  # 记录所有请求信息用于调试
-  headers_str = dict(request.headers)
-  query_str = dict(request.query_params)
-  debug_info = f"HEADERS:{headers_str} QUERY:{query_str} BODY:{raw_str}"
+  sender_id = request.headers.get("x-wecom-userid") or request.headers.get("x-userid")
+  sender = sender_id  # 暂时用 userid 作为发送人显示
 
-  sender = None
-  sender_id = None
-
-  # 优先从 query 参数取
-  content = request.query_params.get("content", "")
-
+  content = ""
   try:
     if raw_str:
       payload = json.loads(raw_str)
-      sender = payload.get("from", {}).get("name") or payload.get("sender")
-      sender_id = payload.get("from", {}).get("userId") or payload.get("senderId")
+      # 企业微信智能机器人工具调用格式：Content 大写
       content = (
-        content
-        or payload.get("text", {}).get("content")
+        payload.get("Content")
         or payload.get("content")
+        or payload.get("text", {}).get("content")
         or payload.get("message")
         or raw_str
       )
   except Exception:
-    if not content:
-      content = raw_str
+    content = raw_str
 
   msg = Message(
     sender=sender,
     sender_id=sender_id,
     content=content,
-    raw_payload=debug_info,
+    raw_payload=raw_str,
   )
   db.add(msg)
   db.commit()
