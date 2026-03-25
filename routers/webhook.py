@@ -4,7 +4,8 @@ from fastapi import APIRouter, Request, Depends, Query, Header, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
-from models import Message
+from models import Message, User
+from routers.auth import get_current_user
 
 router = APIRouter()
 
@@ -62,7 +63,8 @@ async def receive_wecom_message(
 def get_messages(
   page: int = Query(1, ge=1),
   size: int = Query(20, ge=1, le=100),
-  db: Session = Depends(get_db)
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
 ):
   total = db.query(Message).count()
   messages = (
