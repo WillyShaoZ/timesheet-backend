@@ -90,3 +90,17 @@ def get_messages(
       for m in messages
     ]
   }
+
+
+@router.patch("/messages/{message_id}/processed")
+def mark_message_processed(
+  message_id: int,
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  msg = db.query(Message).filter(Message.id == message_id).first()
+  if not msg:
+    raise HTTPException(status_code=404, detail="消息不存在")
+  msg.processed = True
+  db.commit()
+  return {"status": "ok"}
