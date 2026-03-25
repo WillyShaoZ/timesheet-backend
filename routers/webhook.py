@@ -1,0 +1,79 @@
+import json
+from fastapi import APIRouter, Request, Depends, Query
+from sqlalchemy.orm import Session
+from sqlalchemy import desc
+from database import get_db
+from models import Message
+
+router = APIRouter()
+
+@router.post("/wecom")
+async def receive_wecom_message(request: Request, db: Session = Depends(get_db)):
+  raw_body = await request.body()
+  raw_str = raw_body.decode("utf-8")
+
+  # 尝试解析 JSON，提取发送者和内容
+  sender = None
+  sender_id = None
+  content = raw_str
+
+  try:
+    payload = json.loads(raw_str)
+
+    # 企业微信消息格式（根据实际响应再调整）
+    sender = payload.get("from", {}).get("name") or payload.get("sender")
+    sender_id = payload.get("from", {}).get("userId") or payload.get("senderId")
+    content = (
+      payload.get("text", {}).get("content")
+      or payload.get("content")
+      or payload.get("message")
+      or raw_str
+    )
+  except Exception:
+    # 解析失败就存原始内容，后续再看格式
+    pass
+
+  msg = Message(
+    sender=sender,
+    sender_id=sender_id,
+    content=content,
+    raw_payload=raw_str,
+  )
+  db.add(msg)
+  db.commit()
+  db.refresh(msg)
+
+  print(f"[收到消息] id={msg.id} sender={sender} content={content[:50]}")
+
+  return {"status": "ok", "id": msg.id}
+
+
+@router.get("/messages")
+def get_messages(
+  page: int = Query(1, ge=1),
+  size: int = Query(20, ge=1, le=100),
+  db: Session = Depends(get_db)
+):
+  total = db.query(Message).count()
+  messages = (
+    db.query(Message)
+    .order_by(desc(Message.received_at))
+    .offset((page - 1) * size)
+    .limit(size)
+    .all()
+  )
+  return {
+    "total": total,
+    "page": page,
+    "size": size,
+    "items": [
+      {
+        "id": m.id,
+        "sender": m.sender,
+        "content": m.content,
+        "received_at": m.received_at.isoformat() if m.received_at else None,
+        "processed": m.processed,
+      }
+      for m in messages
+    ]
+  }
