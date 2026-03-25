@@ -80,6 +80,7 @@ def get_messages(
         "id": m.id,
         "sender": m.sender,
         "content": m.content,
+        "raw_payload": m.raw_payload,
         "received_at": m.received_at.isoformat() if m.received_at else None,
         "processed": m.processed,
       }
