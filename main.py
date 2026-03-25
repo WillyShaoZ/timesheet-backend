@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.background import BackgroundScheduler
+from sqlalchemy import text
 from database import Base, engine, get_db
 from routers import webhook
 from routers.auth import router as auth_router, hash_password
@@ -12,6 +13,23 @@ from models import User, Message
 
 # 启动时自动建表
 Base.metadata.create_all(bind=engine)
+
+# 补充新增字段（create_all 不会自动 ALTER 已有表）
+def run_migrations():
+  migrations = [
+    "ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'confirmed'",
+    "ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ai_note TEXT",
+    "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY",  # 防止首次建表遗漏
+  ]
+  with engine.connect() as conn:
+    for sql in migrations:
+      try:
+        conn.execute(text(sql))
+      except Exception:
+        pass
+    conn.commit()
+
+run_migrations()
 
 app = FastAPI(title="Timesheet Backend")
 
