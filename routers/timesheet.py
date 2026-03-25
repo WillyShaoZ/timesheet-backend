@@ -1,3 +1,4 @@
+import json
 from datetime import date
 from io import BytesIO
 from typing import Optional
@@ -6,13 +7,30 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
-from models import TimesheetEntry, User
+from models import TimesheetEntry, AuditLog, User
 from routers.auth import get_current_user
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
 from openpyxl.utils import get_column_letter
 
 router = APIRouter()
+
+
+def entry_to_dict(e: TimesheetEntry) -> dict:
+  return {
+    "date": e.date.isoformat() if e.date else None,
+    "address": e.address, "name": e.name,
+    "people_count": e.people_count, "hours": e.hours,
+    "total_hours": e.total_hours, "verified_hours": e.verified_hours,
+    "hourly_rate": e.hourly_rate, "amount": e.amount, "notes": e.notes,
+  }
+
+def write_audit(db, username, action, table, record_id, old_vals=None, new_vals=None):
+  db.add(AuditLog(
+    username=username, action=action, table_name=table, record_id=record_id,
+    old_values=json.dumps(old_vals, ensure_ascii=False) if old_vals else None,
+    new_values=json.dumps(new_vals, ensure_ascii=False) if new_vals else None,
+  ))
 
 
 @router.post("/entries/batch")
@@ -36,6 +54,9 @@ def create_entries_batch(
     )
     db.add(entry)
     created.append(entry)
+  db.flush()
+  for entry in created:
+    write_audit(db, current_user.username, "CREATE", "timesheet_entries", entry.id, new_vals=entry_to_dict(entry))
   db.commit()
   return {"created": len(created)}
 
@@ -90,13 +111,14 @@ def update_entry(
   entry = db.query(TimesheetEntry).filter(TimesheetEntry.id == entry_id).first()
   if not entry:
     raise HTTPException(status_code=404, detail="记录不存在")
+  old = entry_to_dict(entry)
   allowed = {"verified_hours", "hourly_rate", "amount", "notes", "address", "name", "hours", "total_hours", "people_count"}
   for k, v in data.items():
     if k in allowed:
       setattr(entry, k, v)
-  # 自动计算金额
   if entry.verified_hours and entry.hourly_rate:
     entry.amount = round(entry.verified_hours * entry.hourly_rate, 2)
+  write_audit(db, current_user.username, "UPDATE", "timesheet_entries", entry_id, old_vals=old, new_vals=entry_to_dict(entry))
   db.commit()
   return {"status": "ok"}
 
@@ -110,9 +132,48 @@ def delete_entry(
   entry = db.query(TimesheetEntry).filter(TimesheetEntry.id == entry_id).first()
   if not entry:
     raise HTTPException(status_code=404, detail="记录不存在")
+  old = entry_to_dict(entry)
+  write_audit(db, current_user.username, "DELETE", "timesheet_entries", entry_id, old_vals=old)
   db.delete(entry)
   db.commit()
   return {"status": "ok"}
+
+
+@router.post("/entries/{entry_id}/restore")
+def restore_entry(
+  entry_id: int,
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  """从最近一次修改前的快照回滚"""
+  log = (
+    db.query(AuditLog)
+    .filter(AuditLog.table_name == "timesheet_entries", AuditLog.record_id == entry_id)
+    .filter(AuditLog.old_values != None)
+    .order_by(desc(AuditLog.created_at))
+    .first()
+  )
+  if not log:
+    raise HTTPException(status_code=404, detail="没有可回滚的历史记录")
+
+  old = json.loads(log.old_values)
+  entry = db.query(TimesheetEntry).filter(TimesheetEntry.id == entry_id).first()
+
+  if entry:
+    # 记录在，更新回旧值
+    for k, v in old.items():
+      setattr(entry, k, v)
+  else:
+    # 记录已被删除，重新创建
+    entry = TimesheetEntry(id=entry_id, **{k: v for k, v in old.items() if k != "date"})
+    if old.get("date"):
+      entry.date = date.fromisoformat(old["date"])
+    db.add(entry)
+
+  write_audit(db, current_user.username, "RESTORE", "timesheet_entries", entry_id,
+              new_vals=old, old_vals={"restored_from_log": log.id})
+  db.commit()
+  return {"status": "ok", "restored_to": old}
 
 
 @router.get("/export")

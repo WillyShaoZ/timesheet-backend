@@ -11,6 +11,18 @@ class User(Base):
   role = Column(String, nullable=False, default="viewer")  # boss / accountant
   is_active = Column(Boolean, default=True)
 
+class AuditLog(Base):
+  __tablename__ = "audit_logs"
+
+  id = Column(Integer, primary_key=True, index=True)
+  username = Column(String, nullable=False)           # 操作人
+  action = Column(String, nullable=False)             # CREATE / UPDATE / DELETE
+  table_name = Column(String, nullable=False)         # 操作的表
+  record_id = Column(Integer, nullable=True)          # 操作的记录ID
+  old_values = Column(Text, nullable=True)            # 改前的数据（JSON）
+  new_values = Column(Text, nullable=True)            # 改后的数据（JSON）
+  created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 class TimesheetEntry(Base):
   __tablename__ = "timesheet_entries"
 
