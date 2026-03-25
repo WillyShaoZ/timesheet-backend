@@ -21,32 +21,38 @@ async def receive_wecom_message(
   raw_body = await request.body()
   raw_str = raw_body.decode("utf-8")
 
-  # 尝试解析 JSON，提取发送者和内容
+  # 记录所有请求信息用于调试
+  headers_str = dict(request.headers)
+  query_str = dict(request.query_params)
+  debug_info = f"HEADERS:{headers_str} QUERY:{query_str} BODY:{raw_str}"
+
   sender = None
   sender_id = None
-  content = raw_str
+
+  # 优先从 query 参数取
+  content = request.query_params.get("content", "")
 
   try:
-    payload = json.loads(raw_str)
-
-    # 企业微信消息格式（根据实际响应再调整）
-    sender = payload.get("from", {}).get("name") or payload.get("sender")
-    sender_id = payload.get("from", {}).get("userId") or payload.get("senderId")
-    content = (
-      payload.get("text", {}).get("content")
-      or payload.get("content")
-      or payload.get("message")
-      or raw_str
-    )
+    if raw_str:
+      payload = json.loads(raw_str)
+      sender = payload.get("from", {}).get("name") or payload.get("sender")
+      sender_id = payload.get("from", {}).get("userId") or payload.get("senderId")
+      content = (
+        content
+        or payload.get("text", {}).get("content")
+        or payload.get("content")
+        or payload.get("message")
+        or raw_str
+      )
   except Exception:
-    # 解析失败就存原始内容，后续再看格式
-    pass
+    if not content:
+      content = raw_str
 
   msg = Message(
     sender=sender,
     sender_id=sender_id,
     content=content,
-    raw_payload=raw_str,
+    raw_payload=debug_info,
   )
   db.add(msg)
   db.commit()
