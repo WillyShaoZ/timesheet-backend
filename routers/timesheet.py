@@ -1,6 +1,7 @@
 from datetime import date
 from io import BytesIO
-from fastapi import APIRouter, Depends, HTTPException, Body
+from typing import Optional
+from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
@@ -42,14 +43,20 @@ def create_entries_batch(
 @router.get("/entries")
 def get_entries(
   page: int = 1,
-  size: int = 100,
+  size: int = 500,
+  date_from: Optional[str] = Query(None),
+  date_to: Optional[str] = Query(None),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
-  total = db.query(TimesheetEntry).count()
+  q = db.query(TimesheetEntry)
+  if date_from:
+    q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
+  if date_to:
+    q = q.filter(TimesheetEntry.date <= date.fromisoformat(date_to))
+  total = q.count()
   items = (
-    db.query(TimesheetEntry)
-    .order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
+    q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
     .offset((page - 1) * size)
     .limit(size)
     .all()
@@ -110,14 +117,17 @@ def delete_entry(
 
 @router.get("/export")
 def export_excel(
+  date_from: Optional[str] = Query(None),
+  date_to: Optional[str] = Query(None),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
-  items = (
-    db.query(TimesheetEntry)
-    .order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
-    .all()
-  )
+  q = db.query(TimesheetEntry)
+  if date_from:
+    q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
+  if date_to:
+    q = q.filter(TimesheetEntry.date <= date.fromisoformat(date_to))
+  items = q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc()).all()
 
   wb = openpyxl.Workbook()
   ws = wb.active
