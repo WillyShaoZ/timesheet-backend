@@ -22,19 +22,23 @@ async def receive_wecom_message(
   raw_str = raw_body.decode("utf-8")
 
   sender_id = request.headers.get("x-wecom-userid") or request.headers.get("x-userid")
-  sender = sender_id  # 暂时用 userid 作为发送人显示
-
+  sender = None
   content = ""
+
   try:
     if raw_str:
       payload = json.loads(raw_str)
-      # 企业微信智能机器人工具调用格式：Content 大写
       content = (
         payload.get("Content")
         or payload.get("content")
         or payload.get("text", {}).get("content")
         or payload.get("message")
         or raw_str
+      )
+      sender = (
+        payload.get("Sender")
+        or payload.get("sender")
+        or sender_id
       )
   except Exception:
     content = raw_str
