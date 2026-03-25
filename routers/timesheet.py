@@ -182,9 +182,11 @@ def update_entry(
   if not entry:
     raise HTTPException(status_code=404, detail="记录不存在")
   old = entry_to_dict(entry)
-  allowed = {"verified_hours", "hourly_rate", "amount", "notes", "address", "name", "hours", "total_hours", "people_count"}
+  allowed = {"verified_hours", "hourly_rate", "amount", "notes", "address", "name", "hours", "total_hours", "people_count", "date"}
   for k, v in data.items():
     if k in allowed:
+      if k == "date" and isinstance(v, str) and v:
+        v = date.fromisoformat(v)
       setattr(entry, k, v)
   if entry.verified_hours and entry.hourly_rate:
     entry.amount = round(entry.verified_hours * entry.hourly_rate, 2)
