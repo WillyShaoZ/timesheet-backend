@@ -38,6 +38,8 @@ class TimesheetEntry(Base):
   amount = Column(Float, nullable=True)                   # 金额
   notes = Column(String, nullable=True)                   # 备注
   source_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
+  status = Column(String, default="confirmed")            # confirmed / pending / rejected
+  ai_note = Column(Text, nullable=True)                   # AI 存疑原因
   created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 class Message(Base):

@@ -23,7 +23,11 @@ def entry_to_dict(e: TimesheetEntry) -> dict:
     "people_count": e.people_count, "hours": e.hours,
     "total_hours": e.total_hours, "verified_hours": e.verified_hours,
     "hourly_rate": e.hourly_rate, "amount": e.amount, "notes": e.notes,
+    "status": e.status, "ai_note": e.ai_note,
   }
+
+def entry_row(e: TimesheetEntry) -> dict:
+  return {**entry_to_dict(e), "id": e.id, "source_message_id": e.source_message_id}
 
 def write_audit(db, username, action, table, record_id, old_vals=None, new_vals=None):
   db.add(AuditLog(
@@ -61,6 +65,72 @@ def create_entries_batch(
   return {"created": len(created)}
 
 
+@router.get("/known-names")
+def get_known_names(
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  """守护脚本调用，获取已知工人名单"""
+  rows = db.query(TimesheetEntry.name).filter(
+    TimesheetEntry.name != None,
+    TimesheetEntry.status == "confirmed"
+  ).distinct().all()
+  return {"names": [r.name for r in rows if r.name]}
+
+
+@router.get("/pending")
+def get_pending(
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  items = (
+    db.query(TimesheetEntry)
+    .filter(TimesheetEntry.status == "pending")
+    .order_by(TimesheetEntry.created_at.desc())
+    .all()
+  )
+  return {"total": len(items), "items": [entry_row(e) for e in items]}
+
+
+@router.post("/entries/{entry_id}/confirm")
+def confirm_entry(
+  entry_id: int,
+  data: dict = Body(default={}),
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  entry = db.query(TimesheetEntry).filter(TimesheetEntry.id == entry_id).first()
+  if not entry:
+    raise HTTPException(status_code=404, detail="记录不存在")
+  old = entry_to_dict(entry)
+  # 允许确认时顺便修正字段
+  allowed = {"name", "address", "date", "hours", "total_hours", "people_count", "notes"}
+  for k, v in data.items():
+    if k in allowed:
+      setattr(entry, k, v)
+  entry.status = "confirmed"
+  entry.ai_note = None
+  write_audit(db, current_user.username, "CONFIRM", "timesheet_entries", entry_id, old_vals=old, new_vals=entry_to_dict(entry))
+  db.commit()
+  return {"status": "ok"}
+
+
+@router.post("/entries/{entry_id}/reject")
+def reject_entry(
+  entry_id: int,
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  entry = db.query(TimesheetEntry).filter(TimesheetEntry.id == entry_id).first()
+  if not entry:
+    raise HTTPException(status_code=404, detail="记录不存在")
+  old = entry_to_dict(entry)
+  entry.status = "rejected"
+  write_audit(db, current_user.username, "REJECT", "timesheet_entries", entry_id, old_vals=old)
+  db.commit()
+  return {"status": "ok"}
+
+
 @router.get("/entries")
 def get_entries(
   page: int = 1,
@@ -70,7 +140,7 @@ def get_entries(
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
-  q = db.query(TimesheetEntry)
+  q = db.query(TimesheetEntry).filter(TimesheetEntry.status == "confirmed")
   if date_from:
     q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
   if date_to:
@@ -183,7 +253,7 @@ def export_excel(
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
-  q = db.query(TimesheetEntry)
+  q = db.query(TimesheetEntry).filter(TimesheetEntry.status == "confirmed")
   if date_from:
     q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
   if date_to:
