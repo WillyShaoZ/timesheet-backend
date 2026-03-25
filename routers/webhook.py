@@ -1,5 +1,6 @@
 import json
-from fastapi import APIRouter, Request, Depends, Query
+import os
+from fastapi import APIRouter, Request, Depends, Query, Header, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
@@ -7,8 +8,16 @@ from models import Message
 
 router = APIRouter()
 
+WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY", "timesheet-secret-2026")
+
 @router.post("/wecom")
-async def receive_wecom_message(request: Request, db: Session = Depends(get_db)):
+async def receive_wecom_message(
+  request: Request,
+  db: Session = Depends(get_db),
+  x_api_key: str = Header(None)
+):
+  if x_api_key != WEBHOOK_API_KEY:
+    raise HTTPException(status_code=401, detail="Unauthorized")
   raw_body = await request.body()
   raw_str = raw_body.decode("utf-8")
 
