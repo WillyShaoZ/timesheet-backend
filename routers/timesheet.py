@@ -140,6 +140,8 @@ def get_entries(
   size: int = 500,
   date_from: Optional[str] = Query(None),
   date_to: Optional[str] = Query(None),
+  name: Optional[str] = Query(None),
+  address: Optional[str] = Query(None),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
@@ -148,6 +150,10 @@ def get_entries(
     q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
   if date_to:
     q = q.filter(TimesheetEntry.date <= date.fromisoformat(date_to))
+  if name:
+    q = q.filter(TimesheetEntry.name.ilike(f"%{name}%"))
+  if address:
+    q = q.filter(TimesheetEntry.address.ilike(f"%{address}%"))
   total = q.count()
   items = (
     q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
@@ -255,6 +261,8 @@ def restore_entry(
 def export_excel(
   date_from: Optional[str] = Query(None),
   date_to: Optional[str] = Query(None),
+  name: Optional[str] = Query(None),
+  address: Optional[str] = Query(None),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
@@ -263,6 +271,10 @@ def export_excel(
     q = q.filter(TimesheetEntry.date >= date.fromisoformat(date_from))
   if date_to:
     q = q.filter(TimesheetEntry.date <= date.fromisoformat(date_to))
+  if name:
+    q = q.filter(TimesheetEntry.name.ilike(f"%{name}%"))
+  if address:
+    q = q.filter(TimesheetEntry.address.ilike(f"%{address}%"))
   items = q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc()).all()
 
   wb = openpyxl.Workbook()
