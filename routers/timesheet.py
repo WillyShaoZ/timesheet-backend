@@ -53,9 +53,11 @@ def create_entries_batch(
       name=e.get("name", ""),
       people_count=e.get("people_count", 1),
       hours=e.get("hours"),
-      total_hours=e.get("hours"),  # 默认等于工时，可后续核对
+      total_hours=e.get("total_hours") or e.get("hours"),
       notes=e.get("notes", ""),
       source_message_id=e.get("source_message_id"),
+      status=e.get("status", "confirmed"),
+      ai_note=e.get("ai_note"),
     )
     db.add(entry)
     created.append(entry)
