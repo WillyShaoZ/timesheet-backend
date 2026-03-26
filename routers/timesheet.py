@@ -2,6 +2,7 @@ import json
 from datetime import date
 from io import BytesIO
 from typing import Optional
+from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -313,5 +314,5 @@ def export_excel(
   return StreamingResponse(
     buf,
     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"}
+    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
   )
