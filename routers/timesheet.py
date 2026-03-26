@@ -111,9 +111,6 @@ def confirm_entry(
   for k, v in data.items():
     if k in allowed:
       setattr(entry, k, v)
-  # 确认时若未手动填写核对工时，自动用工时合计回填
-  if not entry.verified_hours and entry.total_hours:
-    entry.verified_hours = entry.total_hours
   entry.status = "confirmed"
   entry.ai_note = None
   write_audit(db, current_user.username, "CONFIRM", "timesheet_entries", entry_id, old_vals=old, new_vals=entry_to_dict(entry))
