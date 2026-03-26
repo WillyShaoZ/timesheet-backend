@@ -192,6 +192,8 @@ def confirm_entry(
   allowed = {"name", "address", "date", "hours", "total_hours", "people_count", "notes", "verified_hours"}
   for k, v in data.items():
     if k in allowed:
+      if k == "date" and isinstance(v, str) and v:
+        v = date.fromisoformat(v)
       setattr(entry, k, v)
   entry.status = "confirmed"
   entry.ai_note = None
