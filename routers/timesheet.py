@@ -86,13 +86,30 @@ def get_pending(
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
-  items = (
+  # AI 存疑记录
+  ai_items = (
     db.query(TimesheetEntry)
     .filter(TimesheetEntry.status == "pending")
     .order_by(TimesheetEntry.created_at.desc())
     .all()
   )
-  return {"total": len(items), "items": [entry_row(e) for e in items]}
+  # 工时差异记录：已确认但 verified_hours != total_hours
+  mismatch_items = (
+    db.query(TimesheetEntry)
+    .filter(
+      TimesheetEntry.status == "confirmed",
+      TimesheetEntry.verified_hours != None,
+      TimesheetEntry.total_hours != None,
+      TimesheetEntry.verified_hours != TimesheetEntry.total_hours,
+    )
+    .order_by(TimesheetEntry.date.desc())
+    .all()
+  )
+  result = (
+    [{**entry_row(e), "pending_type": "ai_uncertain"} for e in ai_items] +
+    [{**entry_row(e), "pending_type": "hours_mismatch"} for e in mismatch_items]
+  )
+  return {"total": len(result), "items": result}
 
 
 @router.post("/entries/{entry_id}/confirm")
