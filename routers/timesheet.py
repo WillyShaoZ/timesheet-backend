@@ -46,26 +46,91 @@ def create_entries_batch(
 ):
   """本地解析脚本调用此接口批量写入解析结果"""
   created = []
+  verified_count = 0
+  pending_verification = []
+
   for e in entries:
-    entry = TimesheetEntry(
-      date=date.fromisoformat(e["date"]) if e.get("date") else None,
-      address=e.get("address", ""),
-      name=e.get("name", ""),
-      people_count=e.get("people_count", 1),
-      hours=e.get("hours"),
-      total_hours=e.get("total_hours") or e.get("hours"),
-      notes=e.get("notes", ""),
-      source_message_id=e.get("source_message_id"),
-      status=e.get("status", "confirmed"),
-      ai_note=e.get("ai_note"),
-    )
-    db.add(entry)
-    created.append(entry)
+    if e.get("message_type") == "verification":
+      # 核对工时消息：按姓名+日期匹配已有记录，更新 verified_hours
+      name = e.get("name", "")
+      date_str = e.get("date")
+      verified_hours = e.get("verified_hours")
+      addr_hint = e.get("address", "")
+
+      if not (name and date_str and verified_hours is not None):
+        continue
+
+      # 提取地址关键词（第一个长度>3的词）做模糊匹配
+      addr_keyword = next((w for w in addr_hint.split() if len(w) > 3), addr_hint[:8])
+
+      matched = (
+        db.query(TimesheetEntry)
+        .filter(
+          TimesheetEntry.name == name,
+          TimesheetEntry.date == date.fromisoformat(date_str),
+          TimesheetEntry.status == "confirmed",
+        )
+        .all()
+      )
+      # 按地址关键词进一步筛选（不区分大小写）
+      keyword_lower = addr_keyword.lower()
+      addr_matched = [m for m in matched if keyword_lower in (m.address or "").lower()]
+      targets = addr_matched if addr_matched else matched
+
+      if len(targets) == 1:
+        old = entry_to_dict(targets[0])
+        targets[0].verified_hours = verified_hours
+        write_audit(db, current_user.username, "VERIFY", "timesheet_entries", targets[0].id,
+                    old_vals=old, new_vals=entry_to_dict(targets[0]))
+        verified_count += 1
+      elif len(targets) == 0:
+        # 未找到匹配记录，创建 pending 等待人工确认
+        pending_entry = TimesheetEntry(
+          date=date.fromisoformat(date_str),
+          name=name,
+          address=addr_hint,
+          verified_hours=verified_hours,
+          status="pending",
+          ai_note=f"核对工时记录，未找到对应的工作记录，请确认后手动匹配",
+          source_message_id=e.get("source_message_id"),
+        )
+        db.add(pending_entry)
+        pending_verification.append(pending_entry)
+      else:
+        # 找到多条，无法确定匹配哪条，标 pending
+        pending_entry = TimesheetEntry(
+          date=date.fromisoformat(date_str),
+          name=name,
+          address=addr_hint,
+          verified_hours=verified_hours,
+          status="pending",
+          ai_note=f"核对工时记录，找到{len(targets)}条同名同日记录，无法自动匹配，请手动确认",
+          source_message_id=e.get("source_message_id"),
+        )
+        db.add(pending_entry)
+        pending_verification.append(pending_entry)
+    else:
+      # 普通工作记录
+      entry = TimesheetEntry(
+        date=date.fromisoformat(e["date"]) if e.get("date") else None,
+        address=e.get("address", ""),
+        name=e.get("name", ""),
+        people_count=e.get("people_count", 1),
+        hours=e.get("hours"),
+        total_hours=e.get("total_hours") or e.get("hours"),
+        notes=e.get("notes", ""),
+        source_message_id=e.get("source_message_id"),
+        status=e.get("status", "confirmed"),
+        ai_note=e.get("ai_note"),
+      )
+      db.add(entry)
+      created.append(entry)
+
   db.flush()
   for entry in created:
     write_audit(db, current_user.username, "CREATE", "timesheet_entries", entry.id, new_vals=entry_to_dict(entry))
   db.commit()
-  return {"created": len(created)}
+  return {"created": len(created), "verified": verified_count, "pending_verification": len(pending_verification)}
 
 
 @router.get("/known-names")
