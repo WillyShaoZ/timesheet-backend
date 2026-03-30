@@ -202,6 +202,20 @@ def confirm_entry(
   return {"status": "ok"}
 
 
+@router.delete("/entries/all")
+def clear_all_entries(
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  items = db.query(TimesheetEntry).filter(TimesheetEntry.status == "confirmed").all()
+  count = len(items)
+  for item in items:
+    write_audit(db, current_user.username, "DELETE", "timesheet_entries", item.id, old_vals=entry_to_dict(item))
+    db.delete(item)
+  db.commit()
+  return {"deleted": count}
+
+
 @router.delete("/pending/all")
 def clear_all_pending(
   db: Session = Depends(get_db),
