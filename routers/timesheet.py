@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Optional
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Body, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
@@ -174,7 +174,7 @@ def get_pending(
     [{**entry_row(e), "pending_type": "ai_uncertain"} for e in ai_items] +
     [{**entry_row(e), "pending_type": "hours_mismatch"} for e in mismatch_items]
   )
-  return {"total": len(result), "items": result}
+  return JSONResponse(content={"total": len(result), "items": result}, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/entries/{entry_id}/confirm")
@@ -273,23 +273,26 @@ def get_entries(
     .limit(size)
     .all()
   )
-  return {
-    "total": total,
-    "items": [{
-      "id": e.id,
-      "date": e.date.isoformat() if e.date else None,
-      "address": e.address,
-      "name": e.name,
-      "people_count": e.people_count,
-      "hours": e.hours,
-      "total_hours": e.total_hours,
-      "verified_hours": e.verified_hours,
-      "hourly_rate": e.hourly_rate,
-      "amount": e.amount,
-      "notes": e.notes,
-      "source_message_id": e.source_message_id,
-    } for e in items]
-  }
+  return JSONResponse(
+    content={
+      "total": total,
+      "items": [{
+        "id": e.id,
+        "date": e.date.isoformat() if e.date else None,
+        "address": e.address,
+        "name": e.name,
+        "people_count": e.people_count,
+        "hours": e.hours,
+        "total_hours": e.total_hours,
+        "verified_hours": e.verified_hours,
+        "hourly_rate": e.hourly_rate,
+        "amount": e.amount,
+        "notes": e.notes,
+        "source_message_id": e.source_message_id,
+      } for e in items]
+    },
+    headers={"Cache-Control": "no-store"},
+  )
 
 
 @router.patch("/entries/{entry_id}")
