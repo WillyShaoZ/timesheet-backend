@@ -249,7 +249,7 @@ def reject_entry(
 @router.get("/entries")
 def get_entries(
   page: int = 1,
-  size: int = 500,
+  size: int = 10000,
   date_from: Optional[str] = Query(None),
   date_to: Optional[str] = Query(None),
   name: Optional[str] = Query(None),

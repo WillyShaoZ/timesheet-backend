@@ -64,7 +64,10 @@ def seed_users():
   finally:
     db.close()
 
-seed_users()
+try:
+  seed_users()
+except Exception as e:
+  print(f"[WARN] seed_users failed (ignorable): {e}")
 
 
 def cleanup_old_messages():
@@ -77,8 +80,23 @@ def cleanup_old_messages():
   finally:
     db.close()
 
+def cleanup_old_entries():
+  from models import TimesheetEntry
+  from datetime import date as date_type
+  db = next(get_db())
+  try:
+    one_year_ago = (datetime.utcnow() - timedelta(days=365)).date()
+    deleted = db.query(TimesheetEntry).filter(
+      TimesheetEntry.date < one_year_ago
+    ).delete()
+    db.commit()
+    print(f"[定时清理] 删除 {deleted} 条2个月前的工时记录")
+  finally:
+    db.close()
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(cleanup_old_messages, "cron", hour=3, minute=0)
+scheduler.add_job(cleanup_old_entries, "cron", hour=3, minute=10)
 scheduler.start()
 
 
