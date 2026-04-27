@@ -1,6 +1,10 @@
+import hashlib
+import base64
 import json
 import os
+from Crypto.Cipher import AES
 from fastapi import APIRouter, Request, Depends, Query, Header, HTTPException
+from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
@@ -10,6 +14,34 @@ from routers.auth import get_current_user
 router = APIRouter()
 
 WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY", "timesheet-secret-2026")
+WECOM_TOKEN = os.getenv("WECOM_TOKEN", "uX2X7sPo3hLphLfejaocHVA3D0dmaBtw")
+WECOM_ENCODING_AES_KEY = os.getenv("WECOM_ENCODING_AES_KEY", "43Ika1HRssOt9Lw5Hvb1yiKmt6Yl4NInigz6vGFmkHJ")
+
+
+def decrypt_echostr(echostr_encrypted: str) -> str:
+    key = base64.b64decode(WECOM_ENCODING_AES_KEY + "=")
+    cipher = AES.new(key, AES.MODE_CBC, key[:16])
+    decrypted = cipher.decrypt(base64.b64decode(echostr_encrypted))
+    pad = decrypted[-1]
+    decrypted = decrypted[:-pad]
+    msg_len = int.from_bytes(decrypted[16:20], 'big')
+    content = decrypted[20:20 + msg_len]
+    return content.decode("utf-8")
+
+@router.get("/wecom", response_class=PlainTextResponse)
+async def verify_wecom(
+  msg_signature: str = Query(...),
+  timestamp: str = Query(...),
+  nonce: str = Query(...),
+  echostr: str = Query(...)
+):
+  sign_list = sorted([WECOM_TOKEN, timestamp, nonce, echostr])
+  sign_str = "".join(sign_list)
+  sha1 = hashlib.sha1(sign_str.encode("utf-8")).hexdigest()
+  if sha1 != msg_signature:
+    raise HTTPException(status_code=403, detail="签名验证失败")
+  return decrypt_echostr(echostr)
+
 
 @router.post("/wecom")
 async def receive_wecom_message(
