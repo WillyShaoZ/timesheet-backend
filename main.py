@@ -72,6 +72,32 @@ except Exception as e:
   print(f"[WARN] seed_users failed (ignorable): {e}")
 
 
+def seed_knowledge_base():
+  """首次启动自动冷启动知识库：灌历史 entries 进 workers/sites + 写入 v1 prompt。
+  幂等：prompt_versions 表非空则跳过，避免覆盖老板已有的 prompt 修改。"""
+  from models import PromptVersion
+  from scripts.init_knowledge_base import (
+    seed_workers_from_entries,
+    seed_sites_from_entries,
+    seed_prompt_v1,
+  )
+  db = next(get_db())
+  try:
+    if db.query(PromptVersion).count() > 0:
+      return
+    n_w = seed_workers_from_entries(db)
+    n_s = seed_sites_from_entries(db)
+    seed_prompt_v1(db)
+    print(f"[初始化] 知识库冷启动完成：{n_w} 工人 / {n_s} 地址 / v1 prompt")
+  finally:
+    db.close()
+
+try:
+  seed_knowledge_base()
+except Exception as e:
+  print(f"[WARN] seed_knowledge_base failed (ignorable): {e}")
+
+
 def cleanup_old_messages():
   db = next(get_db())
   try:
