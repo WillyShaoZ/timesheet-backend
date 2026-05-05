@@ -9,6 +9,7 @@ from routers import webhook
 from routers.auth import router as auth_router, hash_password
 from routers.timesheet import router as timesheet_router
 from routers.audit import router as audit_router
+from routers.parsing import router as parsing_router
 from models import User, Message
 
 # 启动时自动建表
@@ -44,6 +45,7 @@ app.include_router(webhook.router, prefix="/webhook")
 app.include_router(auth_router, prefix="/auth")
 app.include_router(timesheet_router, prefix="/timesheet")
 app.include_router(audit_router, prefix="/audit")
+app.include_router(parsing_router, prefix="/parsing")
 
 
 def seed_users():
