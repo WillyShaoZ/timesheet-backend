@@ -143,6 +143,66 @@ except Exception as e:
   print(f"[WARN] seed_formal_employees failed (ignorable): {e}")
 
 
+# 默认时薪（从 2026.02.23-2026.03.08 工时报表图扫出来）
+# 老板可在"员工"页随时改；这里只在 default_hourly_rate 为空时灌入，避免覆盖已设置值
+WORKER_DEFAULT_RATES = {
+  # 23 名正式员工
+  "小林": 45.0, "小汤": 45.0, "小黄": 45.0, "小录": 45.0, "小孙": 45.0,
+  "小陈": 45.0, "小全": 45.0, "小于": 45.0, "小薛": 45.0, "殿军": 45.0,
+  "小宝": 45.0,  # 报表里写 45(55)，主时薪 45
+  "阿俊": 45.0, "嘉铭": 45.0, "老夏": 50.0, "张新宇": 45.0,
+  "王昆": 45.0,  # 报表里写 45(55)，主时薪 45
+  "汪杨": 45.0, "dave": 45.0, "Eric": 45.0, "jacky": 45.0,
+  "nate": 65.0, "tony": 45.0, "ray": 45.0,
+  # 其他工人
+  "benny": 45.0, "jason": 45.0, "jun": 65.0, "Simon": 40.0,
+  "啊滨": 65.0, "阿宝": 45.0, "阿昌": 46.0, "阿豪": 47.0,
+  "阿山": 70.0, "阿翔": 48.0, "阿叶": 40.0, "安仔": 65.0,
+  "宝亮": 47.0, "大伟": 41.0, "国杰": 65.0, "华峰": 47.0,
+  "凯文": 50.0, "文华": 43.0, "老赵": 43.0, "小谷": 44.0,
+  "小海": 45.0, "小马": 40.0, "小胖": 40.0, "小吴": 50.0,
+  "小杨": 45.0, "于嘉伟": 46.0, "小钟": 43.0, "小施": 49.0,
+  "小张": 45.0, "黄勤坤": 45.0, "张军": 44.0, "章智翔": 45.0,
+}
+
+
+def seed_default_hourly_rates():
+  """把表格里的时薪灌进 workers.default_hourly_rate。
+  幂等：只填空值，不覆盖已设置的（避免每次部署把老板手工改的值冲掉）。
+  匹配不上的姓名记录到日志。"""
+  from models import Worker
+  db = next(get_db())
+  try:
+    filled = 0
+    skipped_already_set = 0
+    unmatched = []
+    for name, rate in WORKER_DEFAULT_RATES.items():
+      w = db.query(Worker).filter(Worker.canonical_name == name).first()
+      if not w:
+        unmatched.append(name)
+        continue
+      if w.default_hourly_rate is None:
+        w.default_hourly_rate = rate
+        filled += 1
+      else:
+        skipped_already_set += 1
+    db.commit()
+    if filled:
+      print(f"[初始化] 灌入 {filled} 名工人的默认时薪")
+    if skipped_already_set:
+      print(f"[初始化] {skipped_already_set} 名工人已有时薪，跳过（不覆盖）")
+    if unmatched:
+      print(f"[初始化] 未在花名册找到这些工人的时薪（请手工处理）：{unmatched}")
+  finally:
+    db.close()
+
+
+try:
+  seed_default_hourly_rates()
+except Exception as e:
+  print(f"[WARN] seed_default_hourly_rates failed (ignorable): {e}")
+
+
 def cleanup_old_messages():
   db = next(get_db())
   try:
