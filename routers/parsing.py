@@ -333,6 +333,52 @@ def reject_worker(
 
 # ==================== 别名映射 ====================
 
+@router.post("/knowledge/aliases")
+def create_alias(
+  data: dict = Body(...),
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user),
+):
+  """老板手动添加别名映射（如 '老张'→'张伟'）。
+  默认 status='confirmed'（手动加视为已确认）；occurrence_count 设为阈值以上以表示已生效。"""
+  alias = (data.get("alias") or "").strip()
+  canonical_id = data.get("canonical_id")
+  canonical_name = (data.get("canonical_name") or "").strip()
+  if not alias:
+    raise HTTPException(status_code=400, detail="alias 必填")
+
+  canon = None
+  if canonical_id:
+    canon = db.query(Worker).filter(Worker.id == canonical_id).first()
+  elif canonical_name:
+    canon = db.query(Worker).filter(Worker.canonical_name == canonical_name).first()
+  if not canon:
+    raise HTTPException(status_code=404, detail="找不到对应的 canonical 工人")
+  if canon.canonical_name == alias:
+    raise HTTPException(status_code=400, detail="别名不能和 canonical 同名")
+
+  existing = (
+    db.query(WorkerAlias)
+    .filter(WorkerAlias.alias == alias, WorkerAlias.canonical_id == canon.id)
+    .first()
+  )
+  if existing:
+    return {"id": existing.id, "status": existing.status, "duplicate": True}
+
+  status = data.get("status") or "confirmed"
+  a = WorkerAlias(
+    alias=alias,
+    canonical_id=canon.id,
+    status=status,
+    occurrence_count=ALIAS_AUTO_RESOLVE_THRESHOLD if status in ("confirmed", "auto_resolved") else 0,
+    last_seen_at=datetime.utcnow(),
+  )
+  db.add(a)
+  db.commit()
+  db.refresh(a)
+  return {"id": a.id, "status": a.status, "duplicate": False}
+
+
 @router.get("/knowledge/aliases")
 def list_aliases(
   status: Optional[str] = Query(None),
