@@ -473,6 +473,41 @@ def export_excel(
       cell.alignment = center
       cell.border = border
 
+  # 合计行：SUM 公式，便于改单条后自动重算
+  if items:
+    total_row = len(items) + 2
+    last_data_row = total_row - 1
+    total_font = Font(bold=True)
+    total_fill = PatternFill("solid", fgColor="FFF2CC")  # 淡黄背景
+
+    # 合计标签放在 D 列（姓名列）
+    label = ws.cell(row=total_row, column=4, value="合计")
+    label.font = total_font
+    label.alignment = center
+    label.fill = total_fill
+    label.border = border
+
+    # 数字列：E 人数 / F 工时 / G 工时合计 / H 核对工时 / J 金额
+    sum_columns = [5, 6, 7, 8, 10]
+    for col in sum_columns:
+      col_letter = get_column_letter(col)
+      formula = f"=SUM({col_letter}2:{col_letter}{last_data_row})"
+      cell = ws.cell(row=total_row, column=col, value=formula)
+      cell.font = total_font
+      cell.alignment = center
+      cell.fill = total_fill
+      cell.border = border
+      if col == 10:  # 金额列加货币格式
+        cell.number_format = '"$"#,##0.00'
+
+    # 其他列填空 + 同样底色，让整行视觉一致
+    for col in range(1, len(headers) + 1):
+      if col in sum_columns or col == 4:
+        continue
+      cell = ws.cell(row=total_row, column=col, value="")
+      cell.fill = total_fill
+      cell.border = border
+
   buf = BytesIO()
   wb.save(buf)
   buf.seek(0)
