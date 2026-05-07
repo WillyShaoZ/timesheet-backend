@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
-from models import TimesheetEntry, AuditLog, User
+from models import TimesheetEntry, AuditLog, User, Worker
 from routers.auth import get_current_user
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -111,13 +111,33 @@ def create_entries_batch(
         pending_verification.append(pending_entry)
     else:
       # 普通工作记录
+      name = e.get("name", "")
+      # 时薪：优先用 batch 传入的；否则从 worker 表的 default_hourly_rate 带
+      hourly_rate = e.get("hourly_rate")
+      if hourly_rate is None and name:
+        w = db.query(Worker).filter(Worker.canonical_name == name).first()
+        if w and w.default_hourly_rate is not None:
+          hourly_rate = w.default_hourly_rate
+      hours = e.get("hours")
+      total_hours = e.get("total_hours") or hours
+      verified_hours = e.get("verified_hours")
+      # amount：优先用传入的；否则用 (verified_hours 或 total_hours 或 hours) × hourly_rate
+      amount = e.get("amount")
+      if amount is None and hourly_rate is not None:
+        hrs_for_amount = verified_hours if verified_hours is not None else (total_hours if total_hours is not None else hours)
+        if hrs_for_amount is not None:
+          amount = round(hrs_for_amount * hourly_rate, 2)
+
       entry = TimesheetEntry(
         date=date.fromisoformat(e["date"]) if e.get("date") else None,
         address=e.get("address", ""),
-        name=e.get("name", ""),
+        name=name,
         people_count=e.get("people_count", 1),
-        hours=e.get("hours"),
-        total_hours=e.get("total_hours") or e.get("hours"),
+        hours=hours,
+        total_hours=total_hours,
+        verified_hours=verified_hours,
+        hourly_rate=hourly_rate,
+        amount=amount,
         notes=e.get("notes", ""),
         source_message_id=e.get("source_message_id"),
         status=e.get("status", "confirmed"),

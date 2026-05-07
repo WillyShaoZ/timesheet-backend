@@ -303,6 +303,52 @@ except Exception as e:
   print(f"[WARN] seed_default_hourly_rates failed (ignorable): {e}")
 
 
+def seed_backfill_entry_rates():
+  """把历史 timesheet_entries 中 hourly_rate 为空的，从 worker.default_hourly_rate 补上；
+  amount 为空且能算的也一并补上。幂等：只补 NULL，不覆盖已有值。"""
+  from models import TimesheetEntry, Worker
+  db = next(get_db())
+  try:
+    workers = db.query(Worker).filter(Worker.default_hourly_rate != None).all()
+    rate_by_name = {w.canonical_name: w.default_hourly_rate for w in workers}
+    if not rate_by_name:
+      return
+
+    # 只查 hourly_rate 为空且 name 在花名册里的 entries
+    entries = (
+      db.query(TimesheetEntry)
+      .filter(TimesheetEntry.hourly_rate.is_(None))
+      .filter(TimesheetEntry.name.in_(list(rate_by_name.keys())))
+      .all()
+    )
+    rate_filled = 0
+    amount_filled = 0
+    for e in entries:
+      rate = rate_by_name.get(e.name)
+      if rate is None:
+        continue
+      e.hourly_rate = rate
+      rate_filled += 1
+      if e.amount is None:
+        hrs = e.verified_hours if e.verified_hours is not None else (
+          e.total_hours if e.total_hours is not None else e.hours
+        )
+        if hrs is not None:
+          e.amount = round(hrs * rate, 2)
+          amount_filled += 1
+    db.commit()
+    if rate_filled:
+      print(f"[初始化] 回填 {rate_filled} 条 entries 的时薪 + {amount_filled} 条金额")
+  finally:
+    db.close()
+
+
+try:
+  seed_backfill_entry_rates()
+except Exception as e:
+  print(f"[WARN] seed_backfill_entry_rates failed (ignorable): {e}")
+
+
 def cleanup_old_messages():
   db = next(get_db())
   try:
