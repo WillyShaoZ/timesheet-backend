@@ -286,6 +286,7 @@ def get_entries(
   date_to: Optional[str] = Query(None),
   name: Optional[str] = Query(None),
   address: Optional[str] = Query(None),
+  pay_pool: Optional[str] = Query(None, description="unicorn / aflux / cash；不传 = 全部"),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
@@ -298,13 +299,34 @@ def get_entries(
     q = q.filter(TimesheetEntry.name.ilike(f"%{name}%"))
   if address:
     q = q.filter(TimesheetEntry.address.ilike(f"%{address}%"))
-  total = q.count()
-  items = (
-    q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
-    .offset((page - 1) * size)
-    .limit(size)
-    .all()
-  )
+
+  # 按支付公司筛选：基于 worker.employment_type + address 后缀（Python 侧过滤）
+  if pay_pool in ("unicorn", "aflux", "cash"):
+    all_items = q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc()).all()
+    names = list({e.name for e in all_items if e.name})
+    workers = db.query(Worker).filter(Worker.canonical_name.in_(names)).all() if names else []
+    type_by_name = {w.canonical_name: (w.employment_type or "casual") for w in workers}
+
+    def matches(e):
+      etype = type_by_name.get(e.name or "", "casual")
+      if etype != "formal":
+        return pay_pool == "cash"
+      if pay_pool == "cash":
+        return False
+      is_aflux = _is_aflux_pool(e.address)
+      return (pay_pool == "aflux") if is_aflux else (pay_pool == "unicorn")
+
+    filtered = [e for e in all_items if matches(e)]
+    total = len(filtered)
+    items = filtered[(page - 1) * size : page * size]
+  else:
+    total = q.count()
+    items = (
+      q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc())
+      .offset((page - 1) * size)
+      .limit(size)
+      .all()
+    )
   return JSONResponse(
     content={
       "total": total,
@@ -416,6 +438,7 @@ def export_excel(
   date_to: Optional[str] = Query(None),
   name: Optional[str] = Query(None),
   address: Optional[str] = Query(None),
+  pay_pool: Optional[str] = Query(None, description="unicorn / aflux / cash；不传 = 全部"),
   db: Session = Depends(get_db),
   current_user: User = Depends(get_current_user)
 ):
@@ -429,6 +452,21 @@ def export_excel(
   if address:
     q = q.filter(TimesheetEntry.address.ilike(f"%{address}%"))
   items = q.order_by(TimesheetEntry.date.asc().nullslast(), TimesheetEntry.id.asc()).all()
+
+  # 按支付公司过滤
+  if pay_pool in ("unicorn", "aflux", "cash"):
+    names = list({e.name for e in items if e.name})
+    workers = db.query(Worker).filter(Worker.canonical_name.in_(names)).all() if names else []
+    type_by_name = {w.canonical_name: (w.employment_type or "casual") for w in workers}
+    def matches(e):
+      etype = type_by_name.get(e.name or "", "casual")
+      if etype != "formal":
+        return pay_pool == "cash"
+      if pay_pool == "cash":
+        return False
+      is_aflux = _is_aflux_pool(e.address)
+      return (pay_pool == "aflux") if is_aflux else (pay_pool == "unicorn")
+    items = [e for e in items if matches(e)]
 
   wb = openpyxl.Workbook()
   ws = wb.active
