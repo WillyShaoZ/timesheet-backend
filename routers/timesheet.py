@@ -208,13 +208,25 @@ def confirm_entry(
   if not entry:
     raise HTTPException(status_code=404, detail="记录不存在")
   old = entry_to_dict(entry)
-  # 允许确认时顺便修正字段
-  allowed = {"name", "address", "date", "hours", "total_hours", "people_count", "notes", "verified_hours"}
+  # 允许确认时顺便修正字段（含 hourly_rate）
+  allowed = {"name", "address", "date", "hours", "total_hours", "people_count", "notes", "verified_hours", "hourly_rate"}
   for k, v in data.items():
     if k in allowed:
       if k == "date" and isinstance(v, str) and v:
         v = date.fromisoformat(v)
       setattr(entry, k, v)
+  # 时薪缺失则从 worker.default_hourly_rate 自动带
+  if entry.hourly_rate is None and entry.name:
+    w = db.query(Worker).filter(Worker.canonical_name == entry.name).first()
+    if w and w.default_hourly_rate is not None:
+      entry.hourly_rate = w.default_hourly_rate
+  # 自动算金额：(verified_hours 或 total_hours 或 hours) × 时薪
+  if entry.amount is None and entry.hourly_rate is not None:
+    hrs = entry.verified_hours if entry.verified_hours is not None else (
+      entry.total_hours if entry.total_hours is not None else entry.hours
+    )
+    if hrs is not None:
+      entry.amount = round(hrs * entry.hourly_rate, 2)
   entry.status = "confirmed"
   entry.ai_note = None
   write_audit(db, current_user.username, "CONFIRM", "timesheet_entries", entry_id, old_vals=old, new_vals=entry_to_dict(entry))
@@ -332,8 +344,14 @@ def update_entry(
       if k == "date" and isinstance(v, str) and v:
         v = date.fromisoformat(v)
       setattr(entry, k, v)
-  if entry.verified_hours and entry.hourly_rate:
-    entry.amount = round(entry.verified_hours * entry.hourly_rate, 2)
+  # 自动算金额：(verified_hours 或 total_hours 或 hours) × 时薪
+  # 如果用户显式传了 amount 则不覆盖（已在上面 setattr 写过了）
+  if "amount" not in data and entry.hourly_rate is not None:
+    hrs = entry.verified_hours if entry.verified_hours is not None else (
+      entry.total_hours if entry.total_hours is not None else entry.hours
+    )
+    if hrs is not None:
+      entry.amount = round(hrs * entry.hourly_rate, 2)
   write_audit(db, current_user.username, "UPDATE", "timesheet_entries", entry_id, old_vals=old, new_vals=entry_to_dict(entry))
   db.commit()
   return {"status": "ok"}
