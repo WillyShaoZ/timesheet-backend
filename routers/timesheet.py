@@ -518,3 +518,330 @@ def export_excel(
     media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
   )
+
+
+# ==================== 双周报表（按工人 + 按工地） ====================
+
+# 已知非 aflux 公司标签（出现在地址尾部）
+NON_AFLUX_TAGS = {"lcs", "alan", "allen", "rod", "mark"}
+# 已知所有公司标签（用于工地报表分组；其他归 "other"）
+KNOWN_COMPANY_TAGS = {
+  "aflux": "aflux", "lcs": "lcs", "alan": "alan", "allen": "alan",
+  "rod": "rod", "mark": "mark",
+}
+
+
+def _site_group(address: Optional[str]) -> str:
+  """工地报表分组：aflux / lcs / alan / rod / mark / other（不在已知列表的）"""
+  if not address:
+    return "aflux"
+  parts = address.lower().strip().split()
+  if not parts:
+    return "aflux"
+  for p in (parts[-1], parts[-2] if len(parts) >= 2 else None):
+    if p and p in KNOWN_COMPANY_TAGS:
+      return KNOWN_COMPANY_TAGS[p]
+  return "other"
+
+
+def _is_aflux_pool(address: Optional[str]) -> bool:
+  """工人报酬分账：True = aflux 池 / False = unicorn 池
+  规则：地址尾部是 lcs/alan/allen/rod/mark → unicorn；其他（含 aflux 标签 + 无后缀 + 分包人名）→ aflux"""
+  if not address:
+    return True
+  parts = address.lower().strip().split()
+  if not parts:
+    return True
+  for p in (parts[-1], parts[-2] if len(parts) >= 2 else None):
+    if p and p in NON_AFLUX_TAGS:
+      return False
+  return True
+
+
+def _entry_hours_value(e: TimesheetEntry) -> float:
+  """优先 verified_hours → total_hours → hours"""
+  if e.verified_hours is not None:
+    return float(e.verified_hours)
+  if e.total_hours is not None:
+    return float(e.total_hours)
+  return float(e.hours or 0)
+
+
+def _entry_amount_value(e: TimesheetEntry) -> float:
+  """优先 e.amount；否则按 (verified_hours 或 total_hours 或 hours) × hourly_rate"""
+  if e.amount is not None:
+    return float(e.amount)
+  if e.hourly_rate is None:
+    return 0.0
+  return round(_entry_hours_value(e) * float(e.hourly_rate), 2)
+
+
+def _build_biweekly_report(db: Session, date_from: str, date_to: str) -> dict:
+  """聚合算双周报：返回 by_worker / worker_totals / by_site / site_totals。
+  共用给 JSON 端点和 Excel 端点。"""
+  d_from = date.fromisoformat(date_from)
+  d_to = date.fromisoformat(date_to)
+  entries = (
+    db.query(TimesheetEntry)
+    .filter(TimesheetEntry.status == "confirmed")
+    .filter(TimesheetEntry.date >= d_from, TimesheetEntry.date <= d_to)
+    .all()
+  )
+
+  # 加载所有相关 worker 的 employment_type
+  names = list({e.name for e in entries if e.name})
+  workers = db.query(Worker).filter(Worker.canonical_name.in_(names)).all() if names else []
+  worker_meta = {w.canonical_name: w for w in workers}
+
+  # 按工人聚合
+  by_worker_map = {}
+  for e in entries:
+    name = e.name or "(未填名)"
+    rec = by_worker_map.setdefault(name, {
+      "name": name,
+      "employment_type": (worker_meta.get(name).employment_type if name in worker_meta else "casual") or "casual",
+      "hourly_rate": worker_meta.get(name).default_hourly_rate if name in worker_meta else None,
+      "notes": (worker_meta.get(name).notes if name in worker_meta else None),
+      "total_hours": 0.0,        # SUM total_hours（人头工时合计）
+      "verified_hours": 0.0,     # SUM verified_hours
+      "amount": 0.0,
+      "aflux_payable": 0.0,
+      "unicorn_payable": 0.0,
+      "cash_paid": 0.0,
+    })
+    rec["total_hours"] += float(e.total_hours or 0)
+    rec["verified_hours"] += float(e.verified_hours or 0)
+    amt = _entry_amount_value(e)
+    rec["amount"] += amt
+    is_formal = rec["employment_type"] == "formal"
+    if not is_formal:
+      rec["cash_paid"] += amt
+    elif _is_aflux_pool(e.address):
+      rec["aflux_payable"] += amt
+    else:
+      rec["unicorn_payable"] += amt
+
+  # 排序：先 formal（按金额降序）再 casual/temp（按金额降序）
+  by_worker = sorted(
+    by_worker_map.values(),
+    key=lambda r: (0 if r["employment_type"] == "formal" else 1, -r["amount"]),
+  )
+  for r in by_worker:
+    for k in ("total_hours", "verified_hours", "amount", "aflux_payable", "unicorn_payable", "cash_paid"):
+      r[k] = round(r[k], 2)
+
+  worker_totals = {
+    "total_hours": round(sum(r["total_hours"] for r in by_worker), 2),
+    "verified_hours": round(sum(r["verified_hours"] for r in by_worker), 2),
+    "amount": round(sum(r["amount"] for r in by_worker), 2),
+    "aflux_payable": round(sum(r["aflux_payable"] for r in by_worker), 2),
+    "unicorn_payable": round(sum(r["unicorn_payable"] for r in by_worker), 2),
+    "cash_paid": round(sum(r["cash_paid"] for r in by_worker), 2),
+  }
+
+  # 按工地聚合
+  by_site_map = {}
+  for e in entries:
+    addr = e.address or "(未填地址)"
+    rec = by_site_map.setdefault(addr, {
+      "address": addr,
+      "company": _site_group(addr),
+      "verified_hours": 0.0,
+      "amount": 0.0,
+    })
+    rec["verified_hours"] += float(e.verified_hours or e.total_hours or e.hours or 0)
+    rec["amount"] += _entry_amount_value(e)
+
+  # 按公司分组
+  group_order = ["aflux", "lcs", "alan", "rod", "mark", "other"]
+  group_label = {"aflux": "Aflux", "lcs": "LCS", "alan": "alan", "rod": "rod", "mark": "mark", "other": "其他"}
+  groups_dict = {g: [] for g in group_order}
+  for site_rec in by_site_map.values():
+    site_rec["verified_hours"] = round(site_rec["verified_hours"], 2)
+    site_rec["amount"] = round(site_rec["amount"], 2)
+    site_rec["avg_price"] = (
+      round(site_rec["amount"] / site_rec["verified_hours"], 2)
+      if site_rec["verified_hours"] else 0
+    )
+    groups_dict[site_rec["company"]].append(site_rec)
+
+  by_site_groups = []
+  for g in group_order:
+    sites = sorted(groups_dict[g], key=lambda s: -s["amount"])
+    if not sites:
+      continue
+    by_site_groups.append({
+      "company": g,
+      "label": group_label[g],
+      "sites": sites,
+      "subtotal_hours": round(sum(s["verified_hours"] for s in sites), 2),
+      "subtotal_amount": round(sum(s["amount"] for s in sites), 2),
+    })
+
+  site_totals = {
+    "total_hours": round(sum(g["subtotal_hours"] for g in by_site_groups), 2),
+    "total_amount": round(sum(g["subtotal_amount"] for g in by_site_groups), 2),
+  }
+
+  return {
+    "date_from": date_from,
+    "date_to": date_to,
+    "by_worker": by_worker,
+    "worker_totals": worker_totals,
+    "by_site_groups": by_site_groups,
+    "site_totals": site_totals,
+    "entry_count": len(entries),
+  }
+
+
+@router.get("/report/biweekly")
+def get_biweekly_report(
+  date_from: str = Query(..., description="YYYY-MM-DD"),
+  date_to: str = Query(..., description="YYYY-MM-DD"),
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user),
+):
+  """双周报表 JSON：按工人 + 按工地"""
+  return _build_biweekly_report(db, date_from, date_to)
+
+
+@router.get("/report/biweekly/export")
+def export_biweekly_report(
+  date_from: str = Query(...),
+  date_to: str = Query(...),
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user),
+):
+  """双周报表导出 .xlsx：Sheet1 按工人 + Sheet2 按工地，全部 SUM 公式"""
+  data = _build_biweekly_report(db, date_from, date_to)
+
+  wb = openpyxl.Workbook()
+
+  # ===== Sheet1: 按工人 =====
+  ws1 = wb.active
+  ws1.title = f"{date_from}~{date_to}工时"
+
+  header_font = Font(bold=True)
+  total_font = Font(bold=True)
+  center = Alignment(horizontal="center", vertical="center")
+  thin = Side(style="thin")
+  border = Border(left=thin, right=thin, top=thin, bottom=thin)
+  header_fill = PatternFill("solid", fgColor="D9E1F2")
+  total_fill = PatternFill("solid", fgColor="FFF2CC")
+  formal_fill = PatternFill("solid", fgColor="EAFBEA")  # 淡绿区分正式员工
+  currency_fmt = '"$"#,##0.00'
+
+  ws1_headers = ["姓名", "类型", "时薪", "工时合计", "核对工时", "微信金额", "unicorn 应付", "aflux 应付", "支付给工人", "备注"]
+  ws1_widths = [12, 8, 8, 10, 10, 12, 14, 14, 14, 24]
+  for col, (h, w) in enumerate(zip(ws1_headers, ws1_widths), 1):
+    c = ws1.cell(row=1, column=col, value=h)
+    c.font = header_font; c.alignment = center; c.border = border; c.fill = header_fill
+    ws1.column_dimensions[get_column_letter(col)].width = w
+  ws1.row_dimensions[1].height = 22
+
+  for r_idx, w in enumerate(data["by_worker"], 2):
+    is_formal = w["employment_type"] == "formal"
+    type_label = {"formal": "正式", "casual": "现金", "temp": "临时"}.get(w["employment_type"], w["employment_type"])
+    row = [
+      w["name"], type_label, w["hourly_rate"] or "", w["total_hours"], w["verified_hours"],
+      w["amount"], w["unicorn_payable"] or "", w["aflux_payable"] or "", w["cash_paid"] or "",
+      w["notes"] or "",
+    ]
+    for col, val in enumerate(row, 1):
+      c = ws1.cell(row=r_idx, column=col, value=val)
+      c.alignment = center; c.border = border
+      if is_formal:
+        c.fill = formal_fill
+      if col in (3, 6, 7, 8, 9):
+        c.number_format = currency_fmt
+
+  if data["by_worker"]:
+    total_row = len(data["by_worker"]) + 2
+    last_row = total_row - 1
+    ws1.cell(row=total_row, column=1, value="合计").font = total_font
+    ws1.cell(row=total_row, column=1).fill = total_fill
+    ws1.cell(row=total_row, column=1).border = border
+    ws1.cell(row=total_row, column=1).alignment = center
+    # SUM 列：D 工时合计 / E 核对工时 / F 金额 / G unicorn / H aflux / I cash
+    for col in (4, 5, 6, 7, 8, 9):
+      letter = get_column_letter(col)
+      c = ws1.cell(row=total_row, column=col, value=f"=SUM({letter}2:{letter}{last_row})")
+      c.font = total_font; c.alignment = center; c.border = border; c.fill = total_fill
+      if col in (6, 7, 8, 9):
+        c.number_format = currency_fmt
+    # 其他列填底色
+    for col in (2, 3, 10):
+      c = ws1.cell(row=total_row, column=col, value="")
+      c.fill = total_fill; c.border = border
+
+  # ===== Sheet2: 按工地 =====
+  ws2 = wb.create_sheet(title=f"{date_from}~{date_to}工地")
+  ws2_headers = ["项目", "工时", "金额", "均价"]
+  ws2_widths = [44, 10, 14, 10]
+  for col, (h, w) in enumerate(zip(ws2_headers, ws2_widths), 1):
+    c = ws2.cell(row=1, column=col, value=h)
+    c.font = header_font; c.alignment = center; c.border = border; c.fill = header_fill
+    ws2.column_dimensions[get_column_letter(col)].width = w
+  ws2.row_dimensions[1].height = 22
+
+  group_fill = PatternFill("solid", fgColor="FFF2CC")
+  r = 2
+  data_row_ranges_for_grand_total = []
+  for grp in data["by_site_groups"]:
+    grp_data_start = r
+    for s in grp["sites"]:
+      ws2.cell(row=r, column=1, value=s["address"]).border = border
+      ws2.cell(row=r, column=1).alignment = center
+      ws2.cell(row=r, column=2, value=s["verified_hours"]).border = border
+      ws2.cell(row=r, column=2).alignment = center
+      ws2.cell(row=r, column=3, value=s["amount"]).border = border
+      ws2.cell(row=r, column=3).alignment = center
+      ws2.cell(row=r, column=3).number_format = currency_fmt
+      ws2.cell(row=r, column=4, value=s["avg_price"]).border = border
+      ws2.cell(row=r, column=4).alignment = center
+      ws2.cell(row=r, column=4).number_format = currency_fmt
+      r += 1
+    grp_data_end = r - 1
+    # 小计行
+    if grp["sites"]:
+      ws2.cell(row=r, column=1, value=f"{grp['label']}合计").font = total_font
+      ws2.cell(row=r, column=1).fill = group_fill
+      ws2.cell(row=r, column=1).border = border
+      ws2.cell(row=r, column=1).alignment = center
+      for col, formula_col in [(2, "B"), (3, "C")]:
+        c = ws2.cell(row=r, column=col, value=f"=SUM({formula_col}{grp_data_start}:{formula_col}{grp_data_end})")
+        c.font = total_font; c.alignment = center; c.border = border; c.fill = group_fill
+        if col == 3:
+          c.number_format = currency_fmt
+      ws2.cell(row=r, column=4, value="").fill = group_fill
+      ws2.cell(row=r, column=4).border = border
+      data_row_ranges_for_grand_total.append((grp_data_start, grp_data_end))
+      r += 1
+
+  # 总合计
+  if data_row_ranges_for_grand_total:
+    grand_fill = PatternFill("solid", fgColor="FCE4D6")
+    ws2.cell(row=r, column=1, value="总合计").font = total_font
+    ws2.cell(row=r, column=1).fill = grand_fill
+    ws2.cell(row=r, column=1).border = border
+    ws2.cell(row=r, column=1).alignment = center
+    for col, formula_col in [(2, "B"), (3, "C")]:
+      sum_parts = [f"{formula_col}{a}:{formula_col}{b}" for a, b in data_row_ranges_for_grand_total]
+      formula = "=SUM(" + ",".join(sum_parts) + ")"
+      c = ws2.cell(row=r, column=col, value=formula)
+      c.font = total_font; c.alignment = center; c.border = border; c.fill = grand_fill
+      if col == 3:
+        c.number_format = currency_fmt
+    ws2.cell(row=r, column=4, value="").fill = grand_fill
+    ws2.cell(row=r, column=4).border = border
+
+  buf = BytesIO()
+  wb.save(buf)
+  buf.seek(0)
+
+  filename = f"工时报表_{date_from}_{date_to}.xlsx"
+  return StreamingResponse(
+    buf,
+    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"}
+  )
