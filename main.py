@@ -103,6 +103,106 @@ except Exception as e:
   print(f"[WARN] seed_knowledge_base failed (ignorable): {e}")
 
 
+# 工人 canonical 合并清单：以工时报表图为准。
+# (canonical_name, [aliases_to_merge_in_from_DB])
+# alias_names 全部合并到 canonical_name；alias 工人记录会被删除并改 timesheet_entries.name
+WORKER_MERGES = [
+  # 错字 / 同音字
+  ("嘉铭", ["嘉明"]),
+  ("王昆", ["王坤"]),
+  ("汪杨", ["汪扬", "汪洋"]),
+  ("啊滨", ["阿彬"]),
+  ("宝亮", ["保亮"]),
+  ("章智翔", ["张志祥"]),
+  ("小施", ["小诗"]),
+  # 同音不同字（口字旁 vs 阿字头）
+  ("阿豪", ["啊豪"]),
+  ("阿山", ["啊山"]),
+  ("阿翔", ["啊翔"]),
+  ("阿宝", ["啊宝"]),
+  # 大小写差异
+  ("jacky", ["Jacky"]),
+  ("benny", ["Benny"]),
+  ("jason", ["Jason"]),
+  ("ray", ["Ray"]),
+  ("jun", ["Jun"]),
+]
+
+
+def seed_worker_merges():
+  """以图为准合并 canonical 重复（错字/大小写不同的同一人）。
+  幂等：alias 工人不存在则跳过；已合并的不会重复处理。"""
+  from models import Worker, WorkerAlias, TimesheetEntry
+  db = next(get_db())
+  try:
+    pairs_merged = 0
+    for canonical_name, alias_names in WORKER_MERGES:
+      canonical = db.query(Worker).filter(Worker.canonical_name == canonical_name).first()
+      if not canonical:
+        # 图里有但 DB 还没这个 canonical：建一个
+        canonical = Worker(
+          canonical_name=canonical_name,
+          status="confirmed",
+          confirmed_by="merge_seed",
+          confirmed_at=datetime.utcnow(),
+          notes="合并时新建",
+        )
+        db.add(canonical)
+        db.flush()
+
+      for alias_name in alias_names:
+        old = db.query(Worker).filter(Worker.canonical_name == alias_name).first()
+        if not old or old.id == canonical.id:
+          continue  # 不存在或已是同一条
+        # 1. 改 timesheet_entries.name
+        n_entries = (
+          db.query(TimesheetEntry)
+          .filter(TimesheetEntry.name == alias_name)
+          .update({"name": canonical_name}, synchronize_session=False)
+        )
+        # 2. 把 old 的 aliases 转给 canonical
+        db.query(WorkerAlias).filter(WorkerAlias.canonical_id == old.id).update(
+          {"canonical_id": canonical.id}, synchronize_session=False
+        )
+        # 3. 把 alias_name 本身加为 canonical 的 alias（已存在则跳过）
+        existing = (
+          db.query(WorkerAlias)
+          .filter(WorkerAlias.alias == alias_name, WorkerAlias.canonical_id == canonical.id)
+          .first()
+        )
+        if not existing:
+          db.add(WorkerAlias(
+            alias=alias_name,
+            canonical_id=canonical.id,
+            status="confirmed",
+            occurrence_count=1,
+            last_seen_at=datetime.utcnow(),
+          ))
+        # 4. 把 old 的有用字段移到 canonical（仅在 canonical 没设置时）
+        if canonical.default_hourly_rate is None and old.default_hourly_rate is not None:
+          canonical.default_hourly_rate = old.default_hourly_rate
+        if (canonical.employment_type or "casual") == "casual" and old.employment_type == "formal":
+          canonical.employment_type = "formal"
+        if old.notes and old.notes not in (canonical.notes or ""):
+          canonical.notes = ((canonical.notes + " | ") if canonical.notes else "") + old.notes
+        # 5. 删除 old worker
+        db.delete(old)
+        db.flush()
+        pairs_merged += 1
+        print(f"[合并] '{alias_name}' → '{canonical_name}' (改 {n_entries} 条 entries)")
+    db.commit()
+    if pairs_merged:
+      print(f"[初始化] 工人合并完成：共 {pairs_merged} 对合并")
+  finally:
+    db.close()
+
+
+try:
+  seed_worker_merges()
+except Exception as e:
+  print(f"[WARN] seed_worker_merges failed (ignorable): {e}")
+
+
 # 23 个老板手工指定的"正式员工"名单（来自 2026.02.23-2026.03.08 工时报表右侧分账栏）
 # 名字与数据库 canonical_name 精确匹配；匹配不上的进 unmatched 清单，老板后续手动处理
 FORMAL_EMPLOYEE_NAMES = [
