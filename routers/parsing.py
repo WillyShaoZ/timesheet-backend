@@ -201,9 +201,60 @@ def list_workers(
         "notes": w.notes,
         "created_at": w.created_at.isoformat() if w.created_at else None,
         "aliases": alias_by_worker.get(w.id, []),
+        # 员工档案字段
+        "employment_type": w.employment_type or "casual",
+        "is_active": bool(w.is_active) if w.is_active is not None else True,
+        "default_hourly_rate": w.default_hourly_rate,
+        "abn": w.abn,
       }
       for w in workers
     ]
+  }
+
+
+@router.patch("/knowledge/workers/{worker_id}/employment")
+def update_worker_employment(
+  worker_id: int,
+  data: dict = Body(...),
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user),
+):
+  """更新员工档案字段：employment_type / is_active / default_hourly_rate / abn / notes。
+  仅传入需要修改的字段；不传的字段保持不变。"""
+  w = db.query(Worker).filter(Worker.id == worker_id).first()
+  if not w:
+    raise HTTPException(status_code=404, detail="工人不存在")
+
+  if "employment_type" in data:
+    val = data["employment_type"]
+    if val not in ("formal", "casual", "temp"):
+      raise HTTPException(status_code=400, detail="employment_type 须为 formal/casual/temp")
+    w.employment_type = val
+  if "is_active" in data:
+    w.is_active = bool(data["is_active"])
+  if "default_hourly_rate" in data:
+    rate = data["default_hourly_rate"]
+    if rate is not None and rate != "":
+      try:
+        w.default_hourly_rate = float(rate)
+      except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="default_hourly_rate 必须为数字")
+    else:
+      w.default_hourly_rate = None
+  if "abn" in data:
+    w.abn = (data.get("abn") or "").strip() or None
+  if "notes" in data:
+    w.notes = data["notes"]
+
+  db.commit()
+  return {
+    "status": "ok",
+    "id": w.id,
+    "canonical_name": w.canonical_name,
+    "employment_type": w.employment_type,
+    "is_active": w.is_active,
+    "default_hourly_rate": w.default_hourly_rate,
+    "abn": w.abn,
   }
 
 

@@ -57,17 +57,23 @@ class Message(Base):
 # ==================== AI 解析知识库 ====================
 
 class Worker(Base):
-  """工人花名册（canonical 名单）"""
+  """工人花名册（canonical 名单）+ 员工档案"""
   __tablename__ = "workers"
 
   id = Column(Integer, primary_key=True, index=True)
   canonical_name = Column(String, unique=True, nullable=False, index=True)  # 标准名
-  status = Column(String, default="pending")              # pending / confirmed
+  status = Column(String, default="pending")              # AI 知识库状态: pending / confirmed
   first_seen_message_id = Column(Integer, ForeignKey("messages.id"), nullable=True)
   confirmed_by = Column(String, nullable=True)            # 由谁确认入库
   confirmed_at = Column(DateTime(timezone=True), nullable=True)
   notes = Column(Text, nullable=True)                     # 老板备注（如真实姓名/工号）
   created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+  # 员工档案字段（HR 维度）
+  employment_type = Column(String, default="casual")      # formal / casual / temp
+  is_active = Column(Boolean, default=True)               # 在职=True / 离职=False（再回来切回 True）
+  default_hourly_rate = Column(Float, nullable=True)      # 默认时薪；新 entry 自动带；改它不影响历史快照
+  abn = Column(String, nullable=True)                     # 澳洲税号（formal 类型可能需要）
 
 
 class WorkerAlias(Base):

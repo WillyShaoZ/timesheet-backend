@@ -21,6 +21,11 @@ def run_migrations():
     "ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'confirmed'",
     "ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS ai_note TEXT",
     "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS id SERIAL PRIMARY KEY",  # 防止首次建表遗漏
+    # 员工档案字段（2026-05-07）
+    "ALTER TABLE workers ADD COLUMN IF NOT EXISTS employment_type VARCHAR DEFAULT 'casual'",
+    "ALTER TABLE workers ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE",
+    "ALTER TABLE workers ADD COLUMN IF NOT EXISTS default_hourly_rate FLOAT",
+    "ALTER TABLE workers ADD COLUMN IF NOT EXISTS abn VARCHAR",
   ]
   with engine.connect() as conn:
     for sql in migrations:
@@ -96,6 +101,46 @@ try:
   seed_knowledge_base()
 except Exception as e:
   print(f"[WARN] seed_knowledge_base failed (ignorable): {e}")
+
+
+# 23 个老板手工指定的"正式员工"名单（来自 2026.02.23-2026.03.08 工时报表右侧分账栏）
+# 名字与数据库 canonical_name 精确匹配；匹配不上的进 unmatched 清单，老板后续手动处理
+FORMAL_EMPLOYEE_NAMES = [
+  "小林", "小汤", "小黄", "小录", "小孙", "小陈", "小全", "小于", "小薛", "殿军",
+  "小宝", "阿俊", "嘉铭", "老夏", "张新宇", "王昆", "汪杨", "dave", "Eric",
+  "jacky", "nate", "tony", "ray",
+]
+
+
+def seed_formal_employees():
+  """把上面 23 个名字标 employment_type='formal'。
+  幂等：每次启动都跑，已是 formal 的跳过；匹配不上的打印警告。"""
+  from models import Worker
+  db = next(get_db())
+  try:
+    matched = 0
+    unmatched = []
+    for name in FORMAL_EMPLOYEE_NAMES:
+      w = db.query(Worker).filter(Worker.canonical_name == name).first()
+      if not w:
+        unmatched.append(name)
+        continue
+      if w.employment_type != "formal":
+        w.employment_type = "formal"
+        matched += 1
+    db.commit()
+    if matched:
+      print(f"[初始化] 标记 {matched} 个工人为正式员工")
+    if unmatched:
+      print(f"[初始化] 未在花名册找到这些正式员工（请手工处理）：{unmatched}")
+  finally:
+    db.close()
+
+
+try:
+  seed_formal_employees()
+except Exception as e:
+  print(f"[WARN] seed_formal_employees failed (ignorable): {e}")
 
 
 def cleanup_old_messages():
