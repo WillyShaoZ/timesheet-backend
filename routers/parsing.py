@@ -220,7 +220,12 @@ def update_worker_employment(
   current_user: User = Depends(get_current_user),
 ):
   """更新员工档案字段：employment_type / is_active / default_hourly_rate / abn / notes。
-  仅传入需要修改的字段；不传的字段保持不变。"""
+  仅传入需要修改的字段；不传的字段保持不变。
+
+  特殊副作用：当 default_hourly_rate 从空变成有值（或继续保持有值）时，
+  自动回填该工人**所有 hourly_rate 为 NULL 的 timesheet_entries**（包括 amount）。
+  已经有 hourly_rate 的 entry 不动（保留历史快照）。"""
+  from models import TimesheetEntry
   w = db.query(Worker).filter(Worker.id == worker_id).first()
   if not w:
     raise HTTPException(status_code=404, detail="工人不存在")
@@ -246,6 +251,26 @@ def update_worker_employment(
   if "notes" in data:
     w.notes = data["notes"]
 
+  # 回填历史 entries（只动 hourly_rate 为空的）
+  backfilled = 0
+  if w.default_hourly_rate is not None:
+    null_entries = (
+      db.query(TimesheetEntry)
+      .filter(TimesheetEntry.name == w.canonical_name)
+      .filter(TimesheetEntry.hourly_rate.is_(None))
+      .all()
+    )
+    rate_val = float(w.default_hourly_rate)
+    for e in null_entries:
+      e.hourly_rate = rate_val
+      if e.amount is None:
+        hrs = e.verified_hours if e.verified_hours is not None else (
+          e.total_hours if e.total_hours is not None else e.hours
+        )
+        if hrs is not None:
+          e.amount = round(hrs * rate_val, 2)
+      backfilled += 1
+
   db.commit()
   return {
     "status": "ok",
@@ -255,6 +280,7 @@ def update_worker_employment(
     "is_active": w.is_active,
     "default_hourly_rate": w.default_hourly_rate,
     "abn": w.abn,
+    "backfilled_entries": backfilled,
   }
 
 
