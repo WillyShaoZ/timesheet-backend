@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
-from models import TimesheetEntry, AuditLog, User, Worker
+from models import TimesheetEntry, AuditLog, User, Worker, WorkerAlias
 from routers.auth import get_current_user
 import openpyxl
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
@@ -38,6 +38,16 @@ def write_audit(db, username, action, table, record_id, old_vals=None, new_vals=
   ))
 
 
+def build_alias_map(db) -> dict:
+  """alias_string -> Worker（仅 confirmed/auto_resolved 状态的别名）"""
+  alias_rows = db.query(WorkerAlias).filter(
+    WorkerAlias.status.in_(["confirmed", "auto_resolved"])
+  ).all()
+  worker_by_id = {w.id: w for w in db.query(Worker).all()}
+  return {a.alias: worker_by_id[a.canonical_id]
+          for a in alias_rows if a.canonical_id in worker_by_id}
+
+
 @router.post("/entries/batch")
 def create_entries_batch(
   entries: list = Body(...),
@@ -49,10 +59,21 @@ def create_entries_batch(
   verified_count = 0
   pending_verification = []
 
+  # 别名归一化：本次 batch 内，alias 名字统一替换为 canonical（保证工时表 name 始终是 canonical）
+  alias_map = build_alias_map(db)
+
   for e in entries:
+    raw_name = e.get("name", "") or ""
+    if raw_name in alias_map:
+      worker_for_name = alias_map[raw_name]
+      name = worker_for_name.canonical_name
+    else:
+      name = raw_name
+      worker_for_name = (db.query(Worker).filter(Worker.canonical_name == name).first()
+                         if name else None)
+
     if e.get("message_type") == "verification":
       # 核对工时消息：按姓名+日期匹配已有记录，更新 verified_hours
-      name = e.get("name", "")
       date_str = e.get("date")
       verified_hours = e.get("verified_hours")
       addr_hint = e.get("address", "")
@@ -111,13 +132,10 @@ def create_entries_batch(
         pending_verification.append(pending_entry)
     else:
       # 普通工作记录
-      name = e.get("name", "")
-      # 时薪：优先用 batch 传入的；否则从 worker 表的 default_hourly_rate 带
+      # 时薪：优先用 batch 传入的；否则从（alias 已归一化的）canonical worker 带
       hourly_rate = e.get("hourly_rate")
-      if hourly_rate is None and name:
-        w = db.query(Worker).filter(Worker.canonical_name == name).first()
-        if w and w.default_hourly_rate is not None:
-          hourly_rate = w.default_hourly_rate
+      if hourly_rate is None and worker_for_name and worker_for_name.default_hourly_rate is not None:
+        hourly_rate = worker_for_name.default_hourly_rate
       hours = e.get("hours")
       total_hours = e.get("total_hours") or hours
       verified_hours = e.get("verified_hours")
@@ -151,6 +169,71 @@ def create_entries_batch(
     write_audit(db, current_user.username, "CREATE", "timesheet_entries", entry.id, new_vals=entry_to_dict(entry))
   db.commit()
   return {"created": len(created), "verified": verified_count, "pending_verification": len(pending_verification)}
+
+
+@router.post("/migrate-aliases")
+def migrate_alias_names(
+  db: Session = Depends(get_db),
+  current_user: User = Depends(get_current_user)
+):
+  """一次性数据修复：把工时表里 name 是 confirmed/auto_resolved 别名的记录，
+  统一改成 canonical name；若 hourly_rate 为空且 canonical worker 有 default_hourly_rate，
+  顺带回填 hourly_rate 和 amount。幂等。仅 boss 可执行。"""
+  if current_user.role != "boss":
+    raise HTTPException(status_code=403, detail="仅 boss 可执行")
+
+  alias_map = build_alias_map(db)
+  if not alias_map:
+    return {"status": "ok", "name_renamed": 0, "rate_backfilled": 0, "details": []}
+
+  entries = (
+    db.query(TimesheetEntry)
+    .filter(TimesheetEntry.name.in_(list(alias_map.keys())))
+    .all()
+  )
+
+  name_renamed = 0
+  rate_backfilled = 0
+  details = []
+  for e in entries:
+    canon = alias_map[e.name]
+    old = entry_to_dict(e)
+    old_name = e.name
+
+    e.name = canon.canonical_name
+    name_renamed += 1
+
+    backfilled = False
+    if e.hourly_rate is None and canon.default_hourly_rate is not None:
+      e.hourly_rate = float(canon.default_hourly_rate)
+      hrs = e.verified_hours if e.verified_hours is not None else (
+        e.total_hours if e.total_hours is not None else e.hours
+      )
+      if hrs is not None:
+        e.amount = round(hrs * e.hourly_rate, 2)
+      rate_backfilled += 1
+      backfilled = True
+
+    write_audit(
+      db, current_user.username, "MIGRATE_ALIAS", "timesheet_entries", e.id,
+      old_vals=old, new_vals=entry_to_dict(e),
+    )
+    details.append({
+      "id": e.id,
+      "old_name": old_name,
+      "new_name": e.name,
+      "rate_backfilled": backfilled,
+      "hourly_rate": e.hourly_rate,
+      "amount": e.amount,
+    })
+
+  db.commit()
+  return {
+    "status": "ok",
+    "name_renamed": name_renamed,
+    "rate_backfilled": rate_backfilled,
+    "details": details,
+  }
 
 
 @router.get("/known-names")
