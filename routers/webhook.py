@@ -8,7 +8,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from database import get_db
-from models import Message, User
+from models import Message, User, TimesheetEntry
 from routers.auth import get_current_user
 
 router = APIRouter()
@@ -147,6 +147,13 @@ def delete_message(
   msg = db.query(Message).filter(Message.id == message_id).first()
   if not msg:
     raise HTTPException(status_code=404, detail="消息不存在")
+  # 保护已解析消息：若有工时记录引用此消息，禁止删除（消息是工时凭证）
+  ref_count = db.query(TimesheetEntry).filter(TimesheetEntry.source_message_id == message_id).count()
+  if ref_count > 0:
+    raise HTTPException(
+      status_code=400,
+      detail=f"该消息已生成 {ref_count} 条工时记录，不能删除。如需删除，请先在工时表中删除相关记录。"
+    )
   db.delete(msg)
   db.commit()
   return {"status": "ok"}
