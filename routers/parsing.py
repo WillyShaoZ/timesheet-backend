@@ -22,7 +22,8 @@ from routers.auth import get_current_user
 router = APIRouter()
 
 # 用户主动确认 ≥ 该次数 → alias 自动归并（status: pending → auto_resolved）
-ALIAS_AUTO_RESOLVE_THRESHOLD = 2
+# 一次确认即归并：原 2 次易被狂点绕过，且未与消息去重，无实际意义
+ALIAS_AUTO_RESOLVE_THRESHOLD = 1
 
 
 # ==================== Prompt ====================
